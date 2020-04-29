@@ -3,37 +3,80 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/codding-buddha/ds-pb/kv_store"
-	"github.com/codding-buddha/ds-pb/log"
+	"github.com/codding-buddha/ds-pb/replication"
+	"github.com/codding-buddha/ds-pb/storage"
+	"github.com/codding-buddha/ds-pb/utils"
 	"net/rpc"
+	"os"
+	"os/signal"
 )
 
-func main()  {
+const (
+	Master    = "master"
+	Client    = "client"
+)
+
+func main() {
+	mode := flag.String("mode", Master, "Mode")
+	addr := flag.String("addr", "localhost:9000", "Address of service")
+	masterAddr := flag.String("maddr", "localhost:9000", "Address of master")
+	flag.Parse()
+	logger := utils.NewConsole(true)
+	c := make(chan os.Signal)
+	signal.Notify(c, os.Interrupt)
+
+	if *mode == Master {
+		replication.StartMaster(*addr, *logger)
+	} else if *mode == Client {
+		client := replication.InitClient(*addr, *masterAddr, *logger)
+		client.Update("a", "26")
+		client.Query("b")
+		client.Update("b", "27")
+		client.Query("a")
+		client.Update("a", "29")
+		client.Query("a")
+		client.Query("b")
+		<-c
+	} else {
+		store, _ := storage.New(logger)
+		node := replication.NewChainNode(*addr, store, *masterAddr, *logger)
+		node.Start()
+		select {
+		case <-c:
+			logger.Info().Msg("Shutting down")
+			node.Shutdown()
+		case <-node.OnClose():
+			logger.Info().Msg("Node killed")
+		}
+	}
+}
+
+func testLookupService() {
 	addr := "localhost:9000"
 	mode := flag.String("mode", "server", "Mode")
 	flag.Parse()
-	logger := log.NewConsole(true)
+	logger := utils.NewConsole(true)
 	if *mode == "server" {
-		store, err := kv_store.New(logger)
+		store, err := storage.New(logger)
 		if err != nil {
 			logger.Printf("Service init failed %v\n", err)
 			return
 		}
 
-		lookupService := kv_store.Run(store, addr, logger)
-		<- lookupService.OnClose()
+		lookupService := storage.Run(store, addr, logger)
+		<-lookupService.OnClose()
 	} else {
 		logger.Printf("Sending client requests")
-		args := kv_store.WriteRecordArgs{Record: &kv_store.Record{
+		args := storage.WriteRecordArgs{Record: &storage.Record{
 			Key:   "key1",
 			Value: "Value1",
 		}}
-		var reply kv_store.WriteRecordReply
+		var reply storage.WriteRecordReply
 		ok := call(addr, "LookupService.Write", args, &reply)
 
 		if ok {
-			getReq := kv_store.GetRecordArgs{Key: "key1"}
-			var getReply kv_store.GetRecordReply
+			getReq := storage.GetRecordArgs{Key: "key1"}
+			var getReply storage.GetRecordReply
 			ok := call(addr, "LookupService.Get", getReq, &getReply)
 
 			if ok {
@@ -45,12 +88,10 @@ func main()  {
 			logger.Error().Msg("Write request failed")
 		}
 
-		var srep kv_store.ShutdownServiceReply
-		call(addr, "LookupService.Kill", kv_store.ShutdownServiceArgs{}, &srep)
+		var srep storage.ShutdownServiceReply
+		call(addr, "LookupService.Kill", storage.ShutdownServiceArgs{}, &srep)
 	}
 }
-
-
 
 func call(srv string, rpcname string, args interface{}, reply interface{}) bool {
 	connection, err := rpc.Dial("tcp", srv)

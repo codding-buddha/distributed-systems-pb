@@ -1,7 +1,7 @@
-package kv_store
+package storage
 
 import (
-	"github.com/codding-buddha/ds-pb/log"
+	"github.com/codding-buddha/ds-pb/utils"
 	"github.com/juju/errors"
 	"net"
 	"net/rpc"
@@ -12,7 +12,7 @@ type LookupService struct {
 	addr     string
 	listener net.Listener
 	alive    bool
-	logger   *log.Logger
+	logger   *utils.Logger
 	closed   chan interface{}
 }
 
@@ -48,7 +48,7 @@ func (lookupService *LookupService) Shutdown() {
 	close(lookupService.closed)
 }
 
-func InitLookupService(db *KeyValueStore, addr string, logger *log.Logger) *LookupService {
+func InitLookupService(db *KeyValueStore, addr string, logger *utils.Logger) *LookupService {
 	l := &LookupService{
 		db:       db,
 		addr:     addr,
@@ -61,7 +61,7 @@ func InitLookupService(db *KeyValueStore, addr string, logger *log.Logger) *Look
 	return l
 }
 
-func Run(store *KeyValueStore, addr string, logger *log.Logger) *LookupService {
+func Run(store *KeyValueStore, addr string, logger *utils.Logger) *LookupService {
 	l := InitLookupService(store, addr, logger)
 	l.Start()
 	return l

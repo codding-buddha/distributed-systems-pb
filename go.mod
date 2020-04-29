@@ -3,6 +3,7 @@ module github.com/codding-buddha/ds-pb
 go 1.14
 
 require (
+	github.com/google/uuid v1.1.1
 	github.com/juju/errors v0.0.0-20200330140219-3fe23663418f
 	github.com/juju/loggo v0.0.0-20190526231331-6e530bcce5d8 // indirect
 	github.com/juju/testing v0.0.0-20191001232224-ce9dec17d28b // indirect

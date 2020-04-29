@@ -1,7 +1,7 @@
-package kv_store
+package storage
 
 import (
-	"github.com/codding-buddha/ds-pb/log"
+	"github.com/codding-buddha/ds-pb/utils"
 	"github.com/juju/errors"
 	bolt "go.etcd.io/bbolt"
 	"time"
@@ -12,7 +12,7 @@ const KvBucket = "KVStore"
 // Simple key-value store built using boltdb.
 type KeyValueStore struct {
 	db     *bolt.DB
-	logger *log.Logger
+	logger *utils.Logger
 }
 
 // Represents record in key-value store
@@ -22,7 +22,7 @@ type Record struct {
 }
 
 //New creates new KeyValueStore
-func New(logger *log.Logger) (*KeyValueStore, error) {
+func New(logger *utils.Logger) (*KeyValueStore, error) {
 	var l = KeyValueStore{}
 	db, err := bolt.Open("lookup.db", 0600, &bolt.Options{Timeout: 5 * time.Second})
 	if err == nil {
