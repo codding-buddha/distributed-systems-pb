@@ -23,10 +23,11 @@ func main() {
 	flag.Parse()
 	logger := utils.NewConsole(true)
 	c := make(chan os.Signal)
-	signal.Notify(c, os.Interrupt)
+	signal.Notify(c, os.Interrupt, os.Kill)
 
 	if *mode == Master {
 		replication.StartMaster(*addr, *logger)
+		<-c
 	} else if *mode == Client {
 		client := replication.InitClient(*addr, *masterAddr, *logger)
 		client.Update("a", "26")
@@ -38,7 +39,7 @@ func main() {
 		client.Query("b")
 		<-c
 	} else {
-		store, _ := storage.New(logger)
+		store, _ := storage.New(logger, *addr)
 		node := replication.NewChainNode(*addr, store, *masterAddr, *logger)
 		node.Start()
 		select {
@@ -57,7 +58,7 @@ func testLookupService() {
 	flag.Parse()
 	logger := utils.NewConsole(true)
 	if *mode == "server" {
-		store, err := storage.New(logger)
+		store, err := storage.New(logger, "lookup.db")
 		if err != nil {
 			logger.Printf("Service init failed %v\n", err)
 			return

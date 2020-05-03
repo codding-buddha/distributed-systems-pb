@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/rpc"
 	"sync"
+	"time"
 )
 
 type ChainNode struct {
@@ -58,17 +59,19 @@ type ResponseCallback struct {
 type NoopReply struct {
 }
 
+type HeartBeatArgs struct {
+	Sender string
+}
+
 // Configuration to be considered while servicing query requests
 type QueryConfig struct {
 	// if true then non-tail Nodes can reply to query requests.
 	allowNonTailQuery bool
 }
 
-type UpdateConfigArgs struct {
-	BecomeHead bool
-	BecomeTail bool
+type ChainLinkUpdate struct {
 	Next       string
-	Previous   string
+	Prev       string
 }
 
 type QueryArgs struct {
@@ -144,9 +147,8 @@ func (node *ChainNode) Start() {
 		}
 	}()
 
-	go func() {
-		node.processRequest()
-	}()
+	go node.processRequest()
+	go node.sendHeartBeat()
 }
 
 func (node *ChainNode) Shutdown() {
@@ -156,8 +158,16 @@ func (node *ChainNode) Shutdown() {
 	close(node.close)
 }
 
-func (node *ChainNode) UpdateConfig() {
-
+func (node *ChainNode) UpdateTail(args *ChainLinkUpdate, reply *NoopReply) error {
+	node.logger.Info().Msgf("Received update config command for %s", node.addr)
+	defer node.lock.Unlock()
+	node.lock.Lock()
+	node.config.next = args.Next
+	node.config.prev = args.Prev
+	node.config.isTail = node.config.next == ""
+	node.config.isHead = node.config.prev == ""
+	node.logger.Info().Msgf("Updated config for %, IsTail: %s, IsHead: %s, Next : %s, Prev : %s", node.addr, node.config.isTail, node.config.isHead, node.config.next, node.config.prev)
+	return nil
 }
 
 func (node *ChainNode) canServeQuery() bool {
@@ -179,6 +189,7 @@ func (node *ChainNode) canServeUpdate() bool {
 }
 
 func (node *ChainNode) Query(request *QueryArgs, reply *QueryReply) error {
+	node.logger.Printf("Query request ++")
 	reply.Ok = false
 	if !node.canServeRequest() {
 		node.lock.RUnlock()
@@ -198,18 +209,22 @@ func (node *ChainNode) Query(request *QueryArgs, reply *QueryReply) error {
 	}
 
 	node.handleRequest(req)
-
+	node.logger.Printf("Query request queued")
+	node.logger.Printf("Query request --")
 	reply.Ok = true
 	return nil
 }
 
 func (node *ChainNode) Update(request *UpdateArgs, reply *UpdateReply) error {
+	node.logger.Printf("Update request ++")
 	reply.Ok = false
 	if !node.canServeRequest() {
+		node.logger.Printf("Unable to service request currently")
 		return errors.NotSupportedf("Unable to service request currently")
 	}
 
 	if !node.canServeUpdate() {
+		node.logger.Printf("Cannot service update request")
 		return errors.BadRequestf("Cannot service update request")
 	}
 
@@ -222,12 +237,13 @@ func (node *ChainNode) Update(request *UpdateArgs, reply *UpdateReply) error {
 	}
 
 	node.handleRequest(req)
-
+	node.logger.Printf("Update request --")
 	reply.Ok = true
 	return nil
 }
 
-func (node *ChainNode) SyncUpdate(request *UpdateArgs, reply interface{}) error {
+func (node *ChainNode) SyncUpdate(request *UpdateArgs, reply *NoopReply) error {
+	node.logger.Printf("SyncUpdate request ++")
 	req := Request{
 		id:          request.RequestId,
 		requestType: SyncUpdate,
@@ -237,30 +253,39 @@ func (node *ChainNode) SyncUpdate(request *UpdateArgs, reply interface{}) error 
 	}
 
 	node.handleRequest(req)
+	node.logger.Printf("SyncUpdate request queued")
+	node.logger.Printf("SyncUpdate request --")
 	return nil
 }
 
-func (node *ChainNode) SyncAck(request *UpdateArgs, reply interface{}) error {
+func (node *ChainNode) SyncAck(request *UpdateArgs, reply *NoopReply) error {
+	node.logger.Printf("SyncAck request queued")
 	req := Request{
 		id:          request.RequestId,
 		requestType: SyncAck,
 	}
 
 	node.handleRequest(req)
+	node.logger.Printf("SyncAck request queued")
+	node.logger.Printf("SyncAck request --")
 	return nil
 }
 
 func (node *ChainNode) handleRequest(req Request) {
+	node.logger.Printf("Handle request %s ++", req.requestType)
 	defer node.lock.Unlock()
 	node.lock.Lock()
 	_, ok := node.pending[req.id]
 	if ok {
 		node.logger.Info().Msgf("Ignoring request %v, already in pending state", req)
 	} else {
+		node.logger.Printf("Handle request %s, id: %s add to pending state", req.requestType, req.id)
 		node.pending[req.id] = req
 		// put request in queue and return reply will be sent once request is processed
 		node.requestProcessorQueue <- req
+		node.logger.Printf("Handle request %s, id: %s added to queue", req.requestType, req.id)
 	}
+	node.logger.Printf("Handle request %s --", req.requestType)
 }
 
 func (node *ChainNode) processRequest() {
@@ -347,21 +372,21 @@ func (node *ChainNode) sendUpdateAck(request Request) {
 		return
 	}
 
-	var reply interface{}
+	var reply NoopReply
 
 	update := UpdateArgs{
 		RequestId: request.id,
 	}
 
 	// TODO: time out implementation
-	err := utils.Call(node.config.prev, "ChainNode.SyncAck", &update, reply)
+	err := utils.Call(node.config.prev, "ChainNode.SyncAck", &update, &reply)
 	if err != nil {
 		node.logger.Error().Msgf("Ack %s, failed for requestId: %v", node.config.next, request.id)
 	}
 }
 
 func (node *ChainNode) sendReply(replyAddr string, callback ResponseCallback) {
-	node.logger.Info().Msgf("Sending reply back to client %s, CallbackResponse %v", replyAddr, callback)
+	node.logger.Info().Msgf("Sending reply back from %s to client %s, CallbackResponse %v", node.addr, replyAddr, callback)
 	var reply NoopReply
 	// TODO: time out implementation
 	err := utils.Call(replyAddr, "ServiceClient.Callback", &callback, &reply)
@@ -378,7 +403,7 @@ func (node *ChainNode) forward(request Request) {
 		return
 	}
 
-	var reply interface{}
+	var reply NoopReply
 	update := UpdateArgs{
 		Key:          request.key,
 		Value:        request.value,
@@ -387,9 +412,9 @@ func (node *ChainNode) forward(request Request) {
 	}
 
 	// TODO: time out implementation
-	err := utils.Call(node.config.next, "ChainNode.SyncUpdate", &update, reply)
+	err := utils.Call(node.config.next, "ChainNode.SyncUpdate", &update, &reply)
 	if err != nil {
-		node.logger.Error().Msgf("Sync %s, failed for requestId: %v", node.config.next, request.id)
+		node.logger.Error().Err(err).Msgf("Sync %s, failed for requestId: %v", node.config.next, request.id)
 	}
 }
 
@@ -401,4 +426,25 @@ func (node *ChainNode) updateConfig(reply NodeRegistrationReply) {
 	node.config.next = reply.Next
 	node.config.prev = reply.Previous
 	node.config.isActive = true
+
+	node.logger.Info().Msgf("Updated config for %, IsTail: %s, IsHead: %s, Next : %s, Prev : %s", node.addr, node.config.isTail, node.config.isHead, node.config.next, node.config.prev)
+}
+
+func (node *ChainNode) sendHeartBeat() {
+	hbTimer := time.NewTicker(time.Second * 1)
+	req := HeartBeatArgs{ Sender: node.addr }
+
+	for t := range hbTimer.C {
+		if !node.alive {
+			break
+		}
+
+		node.logger.Printf("Sending heartbeat at %v", t)
+		var reply NoopReply
+		err := utils.Call(node.master, "Master.Heartbeat", &req, &reply)
+		if err != nil {
+			node.logger.Error().Err(err).Msg("Failed to send heart beat signal to master")
+		}
+
+	}
 }

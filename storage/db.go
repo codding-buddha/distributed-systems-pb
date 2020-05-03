@@ -22,9 +22,9 @@ type Record struct {
 }
 
 //New creates new KeyValueStore
-func New(logger *utils.Logger) (*KeyValueStore, error) {
+func New(logger *utils.Logger, dbname string) (*KeyValueStore, error) {
 	var l = KeyValueStore{}
-	db, err := bolt.Open("lookup.db", 0600, &bolt.Options{Timeout: 5 * time.Second})
+	db, err := bolt.Open(dbname, 0600, &bolt.Options{Timeout: 5 * time.Second})
 	if err == nil {
 		err = db.Update(func(tx *bolt.Tx) error {
 			b, err := tx.CreateBucketIfNotExists([]byte(KvBucket))
