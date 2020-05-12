@@ -1,14 +1,18 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
-	"github.com/codding-buddha/ds-pb/replication"
+	"github.com/codding-buddha/ds-pb/replication/master"
+	"github.com/codding-buddha/ds-pb/replication/node"
+	"github.com/codding-buddha/ds-pb/replication/proxy"
 	"github.com/codding-buddha/ds-pb/storage"
 	"github.com/codding-buddha/ds-pb/utils"
 	"net/rpc"
 	"os"
 	"os/signal"
+	"strings"
 )
 
 const (
@@ -26,21 +30,33 @@ func main() {
 	signal.Notify(c, os.Interrupt, os.Kill)
 
 	if *mode == Master {
-		replication.StartMaster(*addr, *logger)
+		master.StartMaster(*addr, *logger)
 		<-c
 	} else if *mode == Client {
-		client := replication.InitClient(*addr, *masterAddr, *logger)
-		client.Update("a", "26")
-		client.Query("b")
-		client.Update("b", "27")
-		client.Query("a")
-		client.Update("a", "29")
-		client.Query("a")
-		client.Query("b")
-		<-c
+		client := proxy.InitClient(*addr, *masterAddr, *logger)
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			input := scanner.Text()
+			if input == "q" {
+				client.Shutdown()
+			}
+
+			parts := strings.Split(input, " ")
+
+			if parts[0] == "q" {
+				client.Query(parts[1])
+			} else {
+				client.Update(parts[1], parts[2])
+			}
+		}
+
+		if scanner.Err() != nil {
+			client.Shutdown()
+		}
+
 	} else {
 		store, _ := storage.New(logger, *addr)
-		node := replication.NewChainNode(*addr, store, *masterAddr, *logger)
+		node := node.NewChainReplicationNode(*addr, store, *masterAddr, *logger)
 		node.Start()
 		select {
 		case <-c:

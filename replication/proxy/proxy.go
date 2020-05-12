@@ -1,6 +1,7 @@
-package replication
+package proxy
 
 import (
+	rpcInterfaces "github.com/codding-buddha/ds-pb/replication/rpc"
 	"github.com/codding-buddha/ds-pb/utils"
 	guuid "github.com/google/uuid"
 	"net"
@@ -14,14 +15,20 @@ type ServiceClient struct {
 	logger utils.Logger
 	closeResponseChannel bool
 	closed chan interface{}
+	reply chan *rpcInterfaces.ResponseCallback
 }
 
 func(client *ServiceClient) OnClose() <- chan interface{}{
 	return client.closed
 }
 
-func (client *ServiceClient) Callback(args *ResponseCallback, reply *NoopReply) error {
+func (client *ServiceClient) OnReply() <- chan *rpcInterfaces.ResponseCallback {
+	return client.reply
+}
+
+func (client *ServiceClient) Callback(args *rpcInterfaces.ResponseCallback, reply *rpcInterfaces.NoopReply) error {
 	client.logger.Info().Msg("Got reply callback")
+	client.reply <- args
 	if args.Error == "" {
 		client.logger.
 			Info().
@@ -35,13 +42,15 @@ func (client *ServiceClient) Callback(args *ResponseCallback, reply *NoopReply) 
 	return nil
 }
 
-func InitClient(addr string, master string, logger utils.Logger) *ServiceClient {
+func InitClient(addr string, master string, logger utils.Logger) (*ServiceClient, error) {
 	client := &ServiceClient{
 		master:           master,
 		addr:             addr,
 		callbackListener: nil,
 		logger:           logger,
 		closeResponseChannel: false,
+		reply: make(chan *rpcInterfaces.ResponseCallback),
+		closed: make(chan interface{}),
 	}
 
 	rpcs := rpc.NewServer()
@@ -49,7 +58,7 @@ func InitClient(addr string, master string, logger utils.Logger) *ServiceClient 
 	l, err := net.Listen("tcp", client.addr)
 	if err != nil {
 		client.logger.Fatal().Err(err).Msg("Failed to create callback channel")
-		return client
+		return client, err
 	}
 
 	client.callbackListener = l
@@ -60,30 +69,34 @@ func InitClient(addr string, master string, logger utils.Logger) *ServiceClient 
 			if !client.closeResponseChannel && err == nil {
 				rpcs.ServeConn(conn)
 				conn.Close()
-			} else if client.closeResponseChannel == true && err != nil {
+			} else if !client.closeResponseChannel && err != nil {
 				client.logger.Error().Err(err).Msg("Accept failure")
 			}
 		}
 	}()
 
-	return client
+	return client, nil
 }
 
 
 func (client *ServiceClient) Query(key string) {
-	req := ChainConfigurationRequest{}
-	var reply ChainConfigurationReply
-	utils.Call(client.master, "Master.GetChainConfiguration", &req, &reply)
-	qr := QueryArgs{
+	req := rpcInterfaces.ChainConfigurationRequest{}
+	var reply rpcInterfaces.ChainConfigurationReply
+	err := utils.Call(client.master, "Master.GetChainConfiguration", &req, &reply)
+	if err != nil {
+		client.logger.Error().Err(err).Msgf("Failed to fetch configuration from {0}", client.master)
+	}
+	qr := rpcInterfaces.QueryArgs{
 		Key:          key,
 		RequestId:    guuid.New().String(),
 		ReplyAddress: client.addr,
 	}
 
-	var qreply QueryReply
+	var qreply rpcInterfaces.QueryReply
 
+	client.logger.Info().Msgf("Master Reply -> Tail is %s, Head is %s", reply.Tail, reply.Head)
 	if reply.Tail != "" {
-		utils.Call(reply.Tail, "ChainNode.Query", &qr, &qreply)
+		utils.Call(reply.Tail, "ChainReplicationNode.Query", &qr, &qreply)
 		client.logger.Info().Msgf("Query: %v, sent successfully.", qr)
 	} else {
 		client.logger.Error().Msgf("Service %s not ready yet, Query (Key = %s) not sent", client.master, key)
@@ -91,22 +104,27 @@ func (client *ServiceClient) Query(key string) {
 }
 
 func (client *ServiceClient) Update(key string, value string) {
-	req := ChainConfigurationRequest{}
-	var reply ChainConfigurationReply
+	req := rpcInterfaces.ChainConfigurationRequest{}
+	var reply rpcInterfaces.ChainConfigurationReply
 	utils.Call(client.master, "Master.GetChainConfiguration", &req, &reply)
-	updateArg := UpdateArgs{
+	updateArg := rpcInterfaces.UpdateArgs{
 		Key:          key,
 		RequestId:    guuid.New().String(),
 		ReplyAddress: client.addr,
 		Value: value,
 	}
 
-	var updateReply UpdateReply
+	var updateReply rpcInterfaces.UpdateReply
 
 	if reply.Head != "" {
-		utils.Call(reply.Head, "ChainNode.Update", &updateArg, &updateReply)
+		utils.Call(reply.Head, "ChainReplicationNode.Update", &updateArg, &updateReply)
 		client.logger.Info().Msgf("Update: %v, sent successfully.", updateArg)
 	} else {
 		client.logger.Error().Msgf("Service %s not ready yet, Update (Key = %s, Value = %s) not sent", client.master, key, value)
 	}
+}
+
+func (client *ServiceClient) Shutdown() {
+	client.closeResponseChannel = true
+	client.callbackListener.Close()
 }
