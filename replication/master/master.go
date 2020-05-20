@@ -1,8 +1,12 @@
 package master
 
 import (
-	rpcdefinition "github.com/codding-buddha/ds-pb/replication/rpc"
+	"context"
+	rpcInterfaces "github.com/codding-buddha/ds-pb/replication/rpc"
 	"github.com/codding-buddha/ds-pb/utils"
+	"github.com/opentracing/opentracing-go"
+	"github.com/opentracing/opentracing-go/ext"
+	"github.com/opentracing/opentracing-go/log"
 	"net"
 	"net/rpc"
 	"sync"
@@ -10,11 +14,12 @@ import (
 )
 
 type Master struct {
+	addr       string
 	chain      *utils.Chain
 	nodeLookup map[string]*Node
 	lock       sync.RWMutex
 	logger     utils.Logger
-	listener net.Listener
+	listener   net.Listener
 	alive      bool
 }
 
@@ -41,10 +46,11 @@ var emptyNode = Node{
 
 func StartMaster(addr string, logger utils.Logger) (*Master, error) {
 	master := &Master{
-		chain:      utils.NewChain(),
-		lock:       sync.RWMutex{},
-		logger:     logger,
-		alive:      true,
+		chain:  utils.NewChain(),
+		lock:   sync.RWMutex{},
+		logger: logger,
+		alive:  true,
+		addr: addr,
 	}
 
 	rpcs := rpc.NewServer()
@@ -103,27 +109,54 @@ func (master *Master) tail() *Node {
 	return node
 }
 
-func (master *Master) Register(args *rpcdefinition.NodeRegistrationArgs, reply *rpcdefinition.NodeRegistrationReply) error {
+func (master *Master) Register(args *rpcInterfaces.NodeRegistrationStartArgs, reply *rpcInterfaces.NodeRegistrationReply) error {
+	span, closer := args.CreateServerSpan("chain-extension", master.populateSpan)
+	defer closer()
+
 	master.logger.Info().Msgf("Received registration request: %v", args)
 	node := NewNode(args.Address)
-	prev, _ := master.add(node)
-
-	reply.IsTail = true
-	reply.IsHead = prev == &emptyNode
-
-	reply.Next = ""
-	if *prev != emptyNode {
-		master.logger.Info().Msgf("New tail in the chain, sending update to predecessor %s", prev.Addr)
-		reply.Previous = prev.Addr
-		go master.notifyChainUpdate(prev)
+	defer master.lock.Unlock()
+	master.lock.Lock()
+	if master.chain.IsEmpty() {
+		master.logger.Info().Msgf("First node in chain, short circuiting the registration flow")
+		master.add(node)
+		reply.AddedToChain = true
+		span.LogFields(log.String("event", "chain extended"), log.String("chain.length", string(master.chain.Count())))
+		return nil
 	}
 
-	master.logger.Info().Msg("Registration complete")
+	err := master.extendChain(node, opentracing.ContextWithSpan(context.Background(), span))
 
+	if err != nil {
+		ext.Error.Set(span, true)
+		span.LogFields(log.String("event", "error"), log.Error(err))
+	}
+
+	return err
+}
+
+func (master *Master) NodeReady(args *rpcInterfaces.NodeReadyArgs, reply *rpcInterfaces.NodeRegistrationReply) error {
+	_, closer := args.CreateServerSpan("chain-extension-complete", master.populateSpan)
+	defer closer()
+	master.logger.Printf("NodeReady ++")
+	node := NewNode(args.Addr)
+	defer master.lock.Unlock()
+	master.lock.Lock()
+	prev, _ := master.add(node)
+	reply.AddedToChain = true
+	reply.Next = ""
+	reply.Previous = ""
+	if prev != &emptyNode {
+		reply.Previous = prev.Addr
+	}
+	master.logger.Printf("NodeReady --")
 	return nil
 }
 
-func (master *Master) GetChainConfiguration(args *rpcdefinition.ChainConfigurationRequest, reply *rpcdefinition.ChainConfigurationReply) error {
+func (master *Master) GetChainConfiguration(args *rpcInterfaces.ChainConfigurationRequest, reply *rpcInterfaces.ChainConfigurationReply) error {
+	_, closer := args.CreateServerSpan("get-chain-configuration", master.populateSpan)
+	defer closer()
+
 	master.logger.Info().Msg("Got configuration fetch request")
 	head := master.head()
 	tail := master.tail()
@@ -132,7 +165,7 @@ func (master *Master) GetChainConfiguration(args *rpcdefinition.ChainConfigurati
 	return nil
 }
 
-func (master *Master) Heartbeat(args *rpcdefinition.HeartBeatArgs, reply *rpcdefinition.NoopReply) error {
+func (master *Master) Heartbeat(args *rpcInterfaces.HeartBeatArgs, reply *rpcInterfaces.NoopReply) error {
 	chainLink, ok := master.chain.GetById(args.Sender)
 
 	if ok {
@@ -149,7 +182,7 @@ func (master *Master) Shutdown() {
 	master.listener.Close()
 }
 
-func (master *Master) notifyChainUpdate(node *Node) {
+func (master *Master) notifyChainUpdate(ctx context.Context, node *Node) {
 	if *node == emptyNode {
 		return
 	}
@@ -158,14 +191,15 @@ func (master *Master) notifyChainUpdate(node *Node) {
 	nextNode := master.getNode(chainLink.Next())
 	prevNode := master.getNode(chainLink.Previous())
 
-	updateConfigArgs := rpcdefinition.SyncConfigurationRequest{
-		Next: nextNode.Addr,
+	updateConfigArgs := rpcInterfaces.SyncConfigurationRequest{
+		Next:     nextNode.Addr,
 		Previous: prevNode.Addr,
+		RequestBase: utils.NewRequestBase(),
 	}
 
-	var reply rpcdefinition.SyncConfigurationReply
+	var reply rpcInterfaces.SyncConfigurationReply
 	// update predecessor about new tail
-	err := utils.Call(node.Addr, "ChainReplicationNode.SyncConfig", &updateConfigArgs, &reply)
+	err := utils.TraceableCall(node.Addr, "ChainReplicationNode.SyncConfig", &updateConfigArgs, &reply, ctx)
 	if err != nil {
 		master.logger.Error().Err(err).Msgf("Failed to notify chain link updates to node %s", node.Addr)
 	}
@@ -187,7 +221,7 @@ func (master *Master) updateAliveNodes() {
 		var linksToBeUpdated []*utils.ChainLink
 		var linksToBeRemoved []*utils.ChainLink
 
-		master.chain.IterFunc(func (chainLink *utils.ChainLink) {
+		master.chain.IterFunc(func(chainLink *utils.ChainLink) {
 			node := master.getNode(chainLink)
 			if node != &emptyNode && node.alive {
 				// remove node from chain if not heard from it within a check cycle
@@ -219,6 +253,15 @@ func (master *Master) updateAliveNodes() {
 			master.chain.Remove(chainLink)
 		}
 
+		trace := len(linksToBeUpdated) > 0
+		var ctx context.Context
+		var span opentracing.Span
+		if trace {
+			tracer := opentracing.GlobalTracer()
+			span = tracer.StartSpan("chain-reconfiguration")
+			ctx = opentracing.ContextWithSpan(context.Background(), span)
+		}
+
 		// Update nodes
 		for _, chainLink := range linksToBeUpdated {
 			node := master.getNode(chainLink)
@@ -227,8 +270,12 @@ func (master *Master) updateAliveNodes() {
 				master.getNode(chainLink.Previous()).Addr,
 				master.getNode(chainLink.Next()).Addr)
 			if node.alive {
-				master.notifyChainUpdate(node)
+				master.notifyChainUpdate(ctx, node)
 			}
+		}
+
+		if span != nil {
+			span.Finish()
 		}
 	}
 }
@@ -242,6 +289,22 @@ func (master *Master) getNode(chainLink *utils.ChainLink) *Node {
 	return chainLink.Data().(*Node)
 }
 
-func(master *Master) logChainLink(chainLink *utils.ChainLink) {
+func (master *Master) logChainLink(chainLink *utils.ChainLink) {
 	//master.logger.Printf("Data: %v, Next : %v, Prev : %v", chainLink.Data(), chainLink.Previous(), chainLink.Next())
+}
+
+func (master *Master) extendChain(node *Node, ctx context.Context) error {
+	args := rpcInterfaces.AddNodeArgs{
+		RequestBase : utils.NewRequestBase(),
+		Addr:      node.Addr,
+	}
+
+	var reply rpcInterfaces.AddNodeReply
+	err := utils.TraceableCall(master.head().Addr, "ChainReplicationNode.AddNode", &args, &reply, ctx)
+	return err
+}
+
+func (master *Master) populateSpan(span opentracing.Span) {
+	ext.PeerService.Set(span, "master")
+	ext.PeerAddress.Set(span, master.addr)
 }

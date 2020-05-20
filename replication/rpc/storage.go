@@ -1,19 +1,19 @@
 package rpc
 
+import "github.com/codding-buddha/ds-pb/utils"
 
 type ResponseCallback struct {
 	Key       string
 	Value     string
-	RequestId string
+	utils.RequestBase
 	Error     string
 }
-
 
 type UpdateArgs struct {
 	Key          string
 	Value        string
-	RequestId    string
 	ReplyAddress string
+	utils.RequestBase
 }
 
 type UpdateReply struct {
@@ -22,10 +22,12 @@ type UpdateReply struct {
 
 type QueryArgs struct {
 	Key          string
-	RequestId    string
 	ReplyAddress string
+	utils.RequestBase
 }
 
 type QueryReply struct {
-	Ok bool
+	Key   string
+	Value string
+	Ok    bool
 }

@@ -1,19 +1,25 @@
 package rpc
 
-type NodeRegistrationArgs struct {
+import (
+	"github.com/codding-buddha/ds-pb/storage"
+	"github.com/codding-buddha/ds-pb/utils"
+)
+
+type NodeRegistrationStartArgs struct {
 	Address string
+	utils.RequestBase
 }
 
 type NodeRegistrationReply struct {
-	IsHead   bool
-	IsTail   bool
-	Previous string
-	Next     string
+	Previous     string
+	Next         string
+	AddedToChain bool
 }
 
 type SyncConfigurationRequest struct {
 	Previous string
-	Next string
+	Next     string
+	utils.RequestBase
 }
 
 type SyncConfigurationReply struct {
@@ -26,7 +32,36 @@ type ChainConfigurationReply struct {
 }
 
 type ChainConfigurationRequest struct {
+	utils.RequestBase
 }
 
 type NoopReply struct {
+}
+
+type SyncHistoryArgs struct {
+	History []storage.Record
+	Sender  string
+	utils.RequestBase
+}
+
+type SyncHistoryReply struct {
+	Ok bool
+}
+
+type NodeReadyArgs struct {
+	Addr string
+	utils.RequestBase
+}
+
+type AddNodeArgs struct {
+	Addr string
+	utils.RequestBase
+}
+
+type AddNodeReply struct {
+	Ok bool
+}
+
+type ContextCarrier struct {
+
 }

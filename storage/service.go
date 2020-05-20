@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"github.com/codding-buddha/ds-pb/utils"
 	"github.com/juju/errors"
 	"net"
@@ -73,7 +74,7 @@ func (lookupService *LookupService) OnClose() <-chan interface{} {
 
 func (lookupService *LookupService) Get(args *GetRecordArgs, reply *GetRecordReply) error {
 	lookupService.logger.Printf("get request received, key: %s", args.Key)
-	r, err := lookupService.db.Get(args.Key)
+	r, err := lookupService.db.Get(context.Background(), args.Key)
 	reply.Record = r
 	reply.Ok = err != nil
 	reply.NotFound = errors.IsNotFound(err)
@@ -88,7 +89,7 @@ func (lookupService *LookupService) Get(args *GetRecordArgs, reply *GetRecordRep
 
 func (lookupService *LookupService) Write(args *WriteRecordArgs, reply *WriteRecordReply) error {
 	lookupService.logger.Printf("write request received, key: %s, value : %s", args.Record.Key, args.Record.Value)
-	err := lookupService.db.Write(*args.Record)
+	err := lookupService.db.Write(context.Background(), *args.Record)
 	reply.Ok = err != nil
 	return err
 }

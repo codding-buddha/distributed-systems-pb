@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
 	"github.com/codding-buddha/ds-pb/replication/master"
@@ -9,6 +10,7 @@ import (
 	"github.com/codding-buddha/ds-pb/replication/proxy"
 	"github.com/codding-buddha/ds-pb/storage"
 	"github.com/codding-buddha/ds-pb/utils"
+	"github.com/opentracing/opentracing-go"
 	"net/rpc"
 	"os"
 	"os/signal"
@@ -30,11 +32,18 @@ func main() {
 	signal.Notify(c, os.Interrupt, os.Kill)
 
 	if *mode == Master {
+		tracer, closer := utils.InitJaeger("master")
+		defer closer.Close()
+		opentracing.SetGlobalTracer(tracer)
 		master.StartMaster(*addr, *logger)
 		<-c
 	} else if *mode == Client {
-		client := proxy.InitClient(*addr, *masterAddr, *logger)
+		tracer, closer := utils.InitJaeger("client")
+		defer closer.Close()
+		opentracing.SetGlobalTracer(tracer)
+		client, _ := proxy.InitClient(*addr, *masterAddr, *logger)
 		scanner := bufio.NewScanner(os.Stdin)
+		reply := client.OnReply()
 		for scanner.Scan() {
 			input := scanner.Text()
 			if input == "q" {
@@ -44,9 +53,19 @@ func main() {
 			parts := strings.Split(input, " ")
 
 			if parts[0] == "q" {
-				client.Query(parts[1])
+				span := tracer.StartSpan("query")
+				ctx := opentracing.ContextWithSpan(context.Background(), span)
+				client.Query(ctx, parts[1])
+				response := <- reply
+				span.Finish()
+				logger.Printf("Key : %s, Value : %s", response.Key, response.Value)
 			} else {
-				client.Update(parts[1], parts[2])
+				span := tracer.StartSpan("update")
+				ctx := opentracing.ContextWithSpan(context.Background(), span)
+				client.Update(ctx, parts[1], parts[2])
+				response := <- reply
+				span.Finish()
+				logger.Printf("Key : %s, Value : %s", response.Key, response.Value)
 			}
 		}
 
@@ -55,6 +74,9 @@ func main() {
 		}
 
 	} else {
+		tracer, closer := utils.InitJaeger("chain-node:" + *addr)
+		defer closer.Close()
+		opentracing.SetGlobalTracer(tracer)
 		store, _ := storage.New(logger, *addr)
 		node := node.NewChainReplicationNode(*addr, store, *masterAddr, *logger)
 		node.Start()

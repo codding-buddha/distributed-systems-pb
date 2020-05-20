@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"github.com/codding-buddha/ds-pb/replication/master"
 	"github.com/codding-buddha/ds-pb/replication/node"
 	"github.com/codding-buddha/ds-pb/replication/proxy"
@@ -64,12 +65,12 @@ func TestSingleNode(t *testing.T) {
 	for i := 0; i < casesCount; i++ {
 		updateKey, _ := guuid.NewUUID()
 		updateValue, _ := guuid.NewUUID()
-		client.Query(updateKey.String())
+		client.Query(context.Background(), updateKey.String())
 		response := <-replyChannel
-		assert.NotEmpty(t, response.Error, "Error msg expected for non existent key")
-		client.Update(updateKey.String(), updateValue.String())
+		assert.NotEmpty(t, response.Error, "Error msg expected for non existent key, found " + response.Error)
+		client.Update(context.Background(), updateKey.String(), updateValue.String())
 		response = <-replyChannel
-		client.Query(updateKey.String())
+		client.Query(context.Background(), updateKey.String())
 		response = <-replyChannel
 		assert.Empty(t, response.Error, "No error expected")
 		assert.Equal(t, updateValue.String(), response.Value)
@@ -95,12 +96,12 @@ func TestTwoNodeSetup(t *testing.T) {
 	for i := 0; i < casesCount; i++ {
 		updateKey, _ := guuid.NewUUID()
 		updateValue, _ := guuid.NewUUID()
-		client.Query(updateKey.String())
+		client.Query(context.Background(),updateKey.String())
 		response := <-replyChannel
 		assert.NotEmpty(t, response.Error, "Error msg expected for non existent key")
-		client.Update(updateKey.String(), updateValue.String())
+		client.Update(context.Background(),updateKey.String(), updateValue.String())
 		response = <-replyChannel
-		client.Query(updateKey.String())
+		client.Query(context.Background(),updateKey.String())
 		response = <-replyChannel
 		assert.Empty(t, response.Error, "No error expected")
 		assert.Equal(t, updateValue.String(), response.Value)
@@ -131,17 +132,114 @@ func TestNNodeSetupWithTailFailure(t *testing.T) {
 	for i := 0; i < casesCount; i++ {
 		updateKey, _ := guuid.NewUUID()
 		updateValue, _ := guuid.NewUUID()
-		client.Query(updateKey.String())
+		client.Query(context.Background(),updateKey.String())
 		response := <-replyChannel
 		assert.NotEmpty(t, response.Error, "Error msg expected for non existent key")
-		client.Update(updateKey.String(), updateValue.String())
+		client.Update(context.Background(),updateKey.String(), updateValue.String())
 		if i > 3 && !tailKilled {
 			cleanUpNodes[len(cleanUpNodes) - 1]()
 			tailKilled = true
 		}
 		response = <-replyChannel
 
-		client.Query(updateKey.String())
+		client.Query(context.Background(),updateKey.String())
+		response = <-replyChannel
+		assert.Empty(t, response.Error, "No error expected")
+		assert.Equal(t, updateValue.String(), response.Value)
+	}
+
+	defer cCleanup()
+	for index, c := range cleanUpNodes {
+		if index < len(cleanUpNodes) - 1 {
+			c()
+		}
+	}
+}
+
+func TestWithMultipleClients(t *testing.T) {
+	logger := utils.NewConsole(true)
+	mAddr := "localhost:9000"
+	nodes := []string {
+		"localhost:9001",
+		"localhost:9002",
+		"localhost:9003",
+		"localhost:9004",
+	}
+
+	mCleanup := testMasterServiceCreation(t, mAddr, *logger)
+	defer mCleanup()
+	var cleanUpNodes []func()
+	for _, node := range nodes {
+		cleanUpFiles(node)
+		cleanUpNodes = append(cleanUpNodes, testNodeCreation(t, node, mAddr, *logger))
+	}
+
+	casesCount := 10
+	client, replyChannel, cCleanup := testClientCreation(t, "localhost:" + strconv.Itoa(9000 + len(nodes) + 1), mAddr, logger)
+	tailKilled := false
+	for i := 0; i < casesCount; i++ {
+		updateKey, _ := guuid.NewUUID()
+		updateValue, _ := guuid.NewUUID()
+		client.Query(context.Background(),updateKey.String())
+		response := <-replyChannel
+		assert.NotEmpty(t, response.Error, "Error msg expected for non existent key")
+		client.Update(context.Background(),updateKey.String(), updateValue.String())
+		if i > 3 && !tailKilled {
+			cleanUpNodes[len(cleanUpNodes) - 1]()
+			tailKilled = true
+		}
+		response = <-replyChannel
+
+		client.Query(context.Background(),updateKey.String())
+		response = <-replyChannel
+		assert.Empty(t, response.Error, "No error expected")
+		assert.Equal(t, updateValue.String(), response.Value)
+	}
+
+	defer cCleanup()
+	for index, c := range cleanUpNodes {
+		if index < len(cleanUpNodes) - 1 {
+			c()
+		}
+	}
+}
+
+func TestChainExtension(t *testing.T) {
+
+	logger := utils.NewConsole(true)
+	mAddr := "localhost:9000"
+	nodes := []string {
+		"localhost:9001",
+		"localhost:9002",
+		"localhost:9003",
+		"localhost:9004",
+	}
+
+	mCleanup := testMasterServiceCreation(t, mAddr, *logger)
+	defer mCleanup()
+	var cleanUpNodes []func()
+	for _, node := range nodes {
+		cleanUpFiles(node)
+		cleanUpNodes = append(cleanUpNodes, testNodeCreation(t, node, mAddr, *logger))
+	}
+
+	casesCount := 10
+	client, replyChannel, cCleanup := testClientCreation(t, "localhost:" + strconv.Itoa(9000 + len(nodes) + 2), mAddr, logger)
+	chainExtended := false
+	for i := 0; i < casesCount; i++ {
+		updateKey, _ := guuid.NewUUID()
+		updateValue, _ := guuid.NewUUID()
+		client.Query(context.Background(),updateKey.String())
+		response := <-replyChannel
+		assert.NotEmpty(t, response.Error, "Error msg expected for non existent key")
+		client.Update(context.Background(),updateKey.String(), updateValue.String())
+		if !chainExtended && i > 5 {
+			chainExtended = true
+			cleanUpNodes = append(cleanUpNodes, testNodeCreation(t, "localhost:" + strconv.Itoa(9000 + len(nodes) + 1), mAddr, *logger))
+		}
+		response = <-replyChannel
+
+		client.Query(context.Background(),updateKey.String())
 		response = <-replyChannel
 		assert.Empty(t, response.Error, "No error expected")
 		assert.Equal(t, updateValue.String(), response.Value)

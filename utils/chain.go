@@ -113,6 +113,12 @@ func (chain *Chain) GetById(id string) (*ChainLink, bool) {
 	return c, ok
 }
 
+func (chain *Chain) Count() int {
+	defer chain.lock.RUnlock()
+	chain.lock.RLock()
+	return len(chain.lookup)
+}
+
 func (chain *Chain) Clear() {
 	defer chain.lock.Unlock()
 	chain.lock.Lock()
