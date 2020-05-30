@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"context"
 	"github.com/codding-buddha/ds-pb/storage"
 	"github.com/codding-buddha/ds-pb/utils"
 	guuid "github.com/google/uuid"
@@ -10,7 +11,7 @@ import (
 )
 
 func testDbCreate(t *testing.T) (*storage.KeyValueStore, func()) {
-	logger := utils.NewConsole(false)
+	logger := utils.NewConsole(false, "client")
 	dbName, _ := guuid.NewUUID()
 	db, err := storage.New(logger, dbName.String())
 
@@ -43,7 +44,7 @@ func TestGetAll(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		db.Write(storage.Record{
+		db.Write(context.Background(), storage.Record{
 			Key:   c.key,
 			Value: c.value,
 		})
@@ -65,8 +66,8 @@ func TestBulkUpdate(t *testing.T) {
 		{"k3", "v3"},
 	}
 
-	db.BulkUpdate(&bulkUpdateRecords)
-	records, err := db.GetAll()
+	db.BulkUpdate(context.Background(), &bulkUpdateRecords)
+	records, err := db.GetAll(context.Background())
 	assert.Empty(t, err)
 	assert.Equal(t, len(bulkUpdateRecords), len(records))
 	for _, record := range records {

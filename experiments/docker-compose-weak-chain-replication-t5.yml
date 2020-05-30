@@ -1,0 +1,63 @@
+version: '3.2'
+services:
+  master:
+    network_mode: host
+    build:
+      context: "../"
+    command: ["-chainMode=weak"]
+
+  head:
+    network_mode: host
+    build:
+      context: "../"
+    depends_on:
+      - "master"
+    command: ["-mode=chain", "-maddr=localhost:9000", "-addr=localhost:9001", "-chainMode=weak", "-enableTrace=false"]
+
+  node1:
+    network_mode: host
+    build:
+      context: "../"
+    depends_on:
+      - "head"
+    command: ["-mode=chain", "-maddr=localhost:9000", "-addr=localhost:9002", "-chainMode=weak", "-enableTrace=false"]
+
+  node2:
+    network_mode: host
+    build:
+      context: "../"
+    depends_on:
+      - "node1"
+    command: ["-mode=chain", "-maddr=localhost:9000", "-addr=localhost:9003", "-chainMode=weak", "-enableTrace=false"]
+
+  node3:
+    network_mode: host
+    build:
+      context: "../"
+    depends_on:
+      - "node2"
+    command: ["-mode=chain", "-maddr=localhost:9000", "-addr=localhost:9004", "-chainMode=weak", "-enableTrace=false"]
+
+  node4:
+    network_mode: host
+    build:
+      context: "../"
+    depends_on:
+      - "node3"
+    command: ["-mode=chain", "-maddr=localhost:9000", "-addr=localhost:9005", "-chainMode=weak", "-enableTrace=false"]
+
+  tail:
+    network_mode: host
+    build:
+      context: "../"
+    depends_on:
+      - "node4"
+    command: ["-mode=chain", "-maddr=localhost:9000", "-addr=localhost:9006", "-chainMode=weak", "-enableTrace=false"]
+
+  client:
+    network_mode: host
+    build:
+      context: "../"
+    depends_on:
+      - "tail"
+    command: ["-mode=experiment", "-maddr=localhost:9000", "-addr=localhost", "-experiment=cr-throughput", "-enableTrace=false"]

@@ -17,12 +17,16 @@ type NodeRegistrationReply struct {
 }
 
 type SyncConfigurationRequest struct {
-	Previous string
-	Next     string
+	Previous              string
+	Next                  string
+	LastPendingRequestId  string
+	FirstPendingRequestId string
 	utils.RequestBase
 }
 
 type SyncConfigurationReply struct {
+	LastPendingRequestId  string
+	FirstPendingRequestId string
 	Ok bool
 }
 
@@ -63,5 +67,4 @@ type AddNodeReply struct {
 }
 
 type ContextCarrier struct {
-
 }

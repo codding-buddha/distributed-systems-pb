@@ -9,6 +9,7 @@ import (
 	"github.com/opentracing/opentracing-go/log"
 	"net"
 	"net/rpc"
+	"strconv"
 )
 
 type ServiceClient struct {
@@ -19,13 +20,15 @@ type ServiceClient struct {
 	closeResponseChannel bool
 	closed               chan interface{}
 	reply                chan *rpcInterfaces.ResponseCallback
+	requestCounter       int
+	callBacks            map[string]chan<- *rpcInterfaces.ResponseCallback
 }
 
 func (client *ServiceClient) OnClose() <-chan interface{} {
 	return client.closed
 }
 
-func (client *ServiceClient) OnReply() <-chan *rpcInterfaces.ResponseCallback {
+func (client *ServiceClient) OnReply() chan *rpcInterfaces.ResponseCallback {
 	return client.reply
 }
 
@@ -33,7 +36,13 @@ func (client *ServiceClient) Callback(args *rpcInterfaces.ResponseCallback, repl
 	_, closer := args.CreateServerSpan("callback")
 	defer closer()
 	client.logger.Info().Msg("Got reply callback")
-	client.reply <- args
+	n, ok := client.callBacks[args.RequestId]
+	if ok {
+		delete(client.callBacks, args.RequestId)
+		go func() {
+			n <- args
+		}()
+	}
 	if args.Error == "" {
 		client.logger.
 			Info().
@@ -54,8 +63,10 @@ func InitClient(addr string, master string, logger utils.Logger) (*ServiceClient
 		callbackListener:     nil,
 		logger:               logger,
 		closeResponseChannel: false,
-		reply:                make(chan *rpcInterfaces.ResponseCallback),
+		reply:                make(chan *rpcInterfaces.ResponseCallback, 25),
 		closed:               make(chan interface{}),
+		requestCounter:       1,
+		callBacks:            make(map[string]chan<- *rpcInterfaces.ResponseCallback),
 	}
 
 	rpcs := rpc.NewServer()
@@ -128,11 +139,57 @@ func (client *ServiceClient) Query(context context.Context, key string) {
 	}(resp)
 }
 
+func (client *ServiceClient) QueryAsync(context context.Context, key string, notify chan<- *rpcInterfaces.ResponseCallback) {
+	span, queryCtx := opentracing.StartSpanFromContext(context, "query-start")
+	defer span.Finish()
+	req := rpcInterfaces.ChainConfigurationRequest{
+		RequestBase: utils.NewRequestBase(),
+	}
+	var reply rpcInterfaces.ChainConfigurationReply
+	err := utils.TraceableCall(client.master, "Master.GetChainConfiguration", &req, &reply, queryCtx)
+	if err != nil {
+		client.logger.Error().Err(err).Msgf("Failed to fetch configuration from {0}", client.master)
+	}
+
+	qr := rpcInterfaces.QueryArgs{
+		Key:          key,
+		ReplyAddress: client.addr,
+		RequestBase:  utils.NewRequestBase(),
+	}
+
+	var qreply rpcInterfaces.QueryReply
+
+	client.logger.Info().Msgf("Master Reply -> Tail is %s, Head is %s", reply.Tail, reply.Head)
+	resp := rpcInterfaces.ResponseCallback{
+		RequestBase: utils.NewRequestBase(),
+	}
+	resp.RequestId = qr.RequestId
+	if reply.Tail != "" {
+		ext.PeerService.Set(span, "proxy")
+		err := utils.TraceableCall(reply.Tail, "ChainReplicationNode.Query", &qr, &qreply, queryCtx)
+		resp.Key = qreply.Key
+		resp.Value = qreply.Value
+
+		if err != nil {
+			client.logger.Error().Err(err)
+			resp.Error = err.Error()
+		} else if !qreply.Ok {
+			resp.Error = "unexpected error"
+		}
+	} else {
+		resp.Error = "not ready"
+	}
+
+	go func(callback rpcInterfaces.ResponseCallback) {
+		notify <- &callback
+	}(resp)
+}
+
 func (client *ServiceClient) Update(context context.Context, key string, value string) {
 	span, updateCtx := opentracing.StartSpanFromContext(context, "update-rpc")
 	defer span.Finish()
-	req := rpcInterfaces.ChainConfigurationRequest {
-		RequestBase : utils.NewRequestBase(),
+	req := rpcInterfaces.ChainConfigurationRequest{
+		RequestBase: utils.NewRequestBase(),
 	}
 	var reply rpcInterfaces.ChainConfigurationReply
 	utils.TraceableCall(client.master, "Master.GetChainConfiguration", &req, &reply, updateCtx)
@@ -142,6 +199,8 @@ func (client *ServiceClient) Update(context context.Context, key string, value s
 		ReplyAddress: client.addr,
 		Value:        value,
 	}
+	updateArg.RequestId = client.addr + "-req-" + strconv.Itoa(client.requestCounter)
+	client.requestCounter++
 
 	var updateReply rpcInterfaces.UpdateReply
 
@@ -151,6 +210,40 @@ func (client *ServiceClient) Update(context context.Context, key string, value s
 	} else {
 		span.LogFields(log.String("event", "update failure"), log.String("reason", "service unavailable"))
 		client.logger.Error().Msgf("Service %s not ready yet, Update (Key = %s, Value = %s) not sent", client.master, key, value)
+	}
+}
+
+func (client *ServiceClient) UpdateAsync(context context.Context, key string, value string, notify chan<- *rpcInterfaces.ResponseCallback) {
+	span, updateCtx := opentracing.StartSpanFromContext(context, "update-rpc")
+	defer span.Finish()
+	req := rpcInterfaces.ChainConfigurationRequest{
+		RequestBase: utils.NewRequestBase(),
+	}
+	var reply rpcInterfaces.ChainConfigurationReply
+	utils.TraceableCall(client.master, "Master.GetChainConfiguration", &req, &reply, updateCtx)
+	updateArg := rpcInterfaces.UpdateArgs{
+		Key:          key,
+		RequestBase:  utils.NewRequestBase(),
+		ReplyAddress: client.addr,
+		Value:        value,
+	}
+	updateArg.RequestId = client.addr + "-req-" + strconv.Itoa(client.requestCounter)
+	client.requestCounter++
+
+	var updateReply rpcInterfaces.UpdateReply
+
+	if reply.Head != "" {
+		client.callBacks[updateArg.RequestId] = notify
+		err := utils.TraceableCall(reply.Head, "ChainReplicationNode.Update", &updateArg, &updateReply, updateCtx)
+		if err != nil {
+			delete(client.callBacks, updateArg.RequestId)
+			notify <- nil
+		}
+		client.logger.Info().Msgf("Update: %v, sent successfully.", updateArg)
+	} else {
+		span.LogFields(log.String("event", "update failure"), log.String("reason", "service unavailable"))
+		client.logger.Error().Msgf("Service %s not ready yet, Update (Key = %s, Value = %s) not sent", client.master, key, value)
+		notify <- nil
 	}
 }
 

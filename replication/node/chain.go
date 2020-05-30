@@ -106,6 +106,25 @@ func NewChainReplicationNode(addr string, db *storage.KeyValueStore, master stri
 	return chain
 }
 
+func NewWeakChainReplicationNode(addr string, db *storage.KeyValueStore, master string, logger utils.Logger) ChainReplicationNode {
+	chain := ChainReplicationNode{
+		addr:                  addr,
+		pending:               utils.NewChain(),
+		sent:                  utils.NewChain(),
+		stableStore:           db,
+		master:                master,
+		lock:                  &sync.RWMutex{},
+		logger:                logger,
+		config:                &ChainConfig{},
+		requestProcessorQueue: make(chan *Request, 1000),
+		alive:                 true,
+		close:                 make(chan interface{}),
+	}
+	chain.config.queryConfig.allowNonTailQuery = true
+
+	return chain
+}
+
 func (node *ChainReplicationNode) OnClose() <-chan interface{} {
 	return node.close
 }
@@ -238,19 +257,23 @@ func (node *ChainReplicationNode) processRequest() {
 		span := opentracing.StartSpan("process-request", spanRef)
 		node.config.lock.RLock()
 		ctx := opentracing.ContextWithSpan(context.Background(), span)
-		if req.requestType == Update && node.canServeUpdate() {
-			node.handleUpdateRequest(ctx, req)
-		} else if req.requestType == SyncAck {
-			node.handleSyncUpdateAck(ctx, req)
-		} else if req.requestType == SyncUpdate {
-			node.handleUpdateRequest(ctx, req)
-		} else if req.requestType == AddNode {
-			node.handleAddNode(ctx, req)
-		} else if req.requestType == AddNodeAck {
-			node.handleAddNodeAck(ctx, req)
-		}
+		node.handleRequest(req, ctx)
 		node.config.lock.RUnlock()
 		span.Finish()
+	}
+}
+
+func (node *ChainReplicationNode) handleRequest(req *Request, ctx context.Context) {
+	if req.requestType == Update && node.canServeUpdate() {
+		node.handleUpdateRequest(ctx, req)
+	} else if req.requestType == SyncAck {
+		node.handleSyncUpdateAck(ctx, req)
+	} else if req.requestType == SyncUpdate {
+		node.handleUpdateRequest(ctx, req)
+	} else if req.requestType == AddNode {
+		node.handleAddNode(ctx, req)
+	} else if req.requestType == AddNodeAck {
+		node.handleAddNodeAck(ctx, req)
 	}
 }
 
@@ -391,8 +414,31 @@ func (node *ChainReplicationNode) forward(ctx context.Context, request *Request)
 
 // handle sync acknowledgement
 func (node *ChainReplicationNode) handleSyncUpdateAck(ctx context.Context, r *Request) {
-	node.sent.RemoveById(r.id)
-	node.persistRecord(ctx, r)
+	expectedAck := node.sent.Head().Data().(*Request)
+	var ackMsgs []*Request
+	if expectedAck.id != r.id {
+		node.logger.Warn().Msgf("out of sync ack received. expected %s, got %s", expectedAck.id, r.id)
+
+		stop := false
+		node.sent.IterFunc(func(link *utils.ChainLink) {
+			if stop {
+				return
+			}
+			req := link.Data().(*Request)
+			if req.id != r.id {
+				ackMsgs = append(ackMsgs, req)
+			} else {
+				stop = true
+			}
+		})
+
+		node.logger.Info().Msgf("Acking %s old msgs", len(ackMsgs))
+	}
+	ackMsgs = append(ackMsgs, r)
+	for _, req := range ackMsgs {
+		node.sent.RemoveById(req.id)
+		node.persistRecord(ctx, req)
+	}
 }
 
 func (node *ChainReplicationNode) handleSyncUpdate(ctx context.Context, r *Request) {
@@ -425,18 +471,40 @@ func (node *ChainReplicationNode) getLastRequestIdReceivedBySuccessor(ctx contex
 	return rep.Id
 }
 
-func (node *ChainReplicationNode) replaySentRequest(ctx context.Context, startAtRequestId string) {
+func (node *ChainReplicationNode) replaySentRequest(ctx context.Context, lastUnCommitedRequestId string, lastReceivedRequestId string) {
 	span, spanCtx := opentracing.StartSpanFromContext(ctx, "replay-sent-request")
 	defer span.Finish()
 	var requestsToBeResend []*Request
-	// if startAt is empty then resend all requests
-	found := startAtRequestId == ""
+
+	if lastUnCommitedRequestId !=  "" {
+		found := false
+		var uncommitedRequests []*Request
+		node.pending.IterFunc(func (r *utils.ChainLink) {
+			if !found && r.Id() != lastUnCommitedRequestId {
+				uncommitedRequests = append(uncommitedRequests, r.Data().(*Request))
+			} else {
+				found = true
+			}
+		})
+
+		for _, r := range uncommitedRequests {
+			node.logger.Info().Msgf("Committing request %s, missed ack from %s to %s", r.id, node.config.next, node.addr)
+			if r.requestType == SyncUpdate || r.requestType == Update {
+				node.handleSyncUpdateAck(spanCtx, r)
+			} else {
+				node.handleAddNodeAck(ctx, r)
+			}
+		}
+	}
+
+	// if last received request by successor is empty then resend all requests
+	found := lastReceivedRequestId == ""
 	node.sent.IterFunc(func(r *utils.ChainLink) {
 		request := r.Data().(*Request)
 		if found {
 			requestsToBeResend = append(requestsToBeResend, request)
 		} else {
-			found = request.id == startAtRequestId
+			found = request.id == lastUnCommitedRequestId
 		}
 	})
 
@@ -450,6 +518,7 @@ func (node *ChainReplicationNode) handleAddNode(ctx context.Context, req *Reques
 	span, spanCtx := opentracing.StartSpanFromContext(ctx, "process-add-node")
 	defer span.Finish()
 	if node.config.isTail() {
+		node.pending.RemoveById(req.id)
 		ok, err := node.sendHistory(spanCtx, req)
 		if ok {
 			node.config.next = req.replyAddr

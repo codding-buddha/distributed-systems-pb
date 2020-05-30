@@ -11,12 +11,13 @@ import (
 )
 
 // initJaeger returns an instance of Jaeger Tracer that samples 100% of traces and logs all spans to stdout.
-func InitJaeger(service string) (opentracing.Tracer, io.Closer) {
+func InitJaeger(service string, disable bool) (opentracing.Tracer, io.Closer) {
 	cfg := &config.Configuration{
 		Sampler: &config.SamplerConfig{
 			Type:  "const",
 			Param: 1,
 		},
+		Disabled: disable,
 		Reporter: &config.ReporterConfig{
 			LogSpans: true,
 		},

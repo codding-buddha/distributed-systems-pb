@@ -101,15 +101,23 @@ func (node *ChainReplicationNode) SyncConfig(request *rpcInterfaces.SyncConfigur
 		node.logger.Info().Msgf("Handle chain reconfiguration, node %s isTail", node.addr)
 		node.handleConfigurationUpdateForTail(ctx)
 	} else {
-
-		// replay requests to new successor to ensure that failure in middle of the chain does not result in some requests being lost
-		lastReceivedRequestIdBySuccessor := node.getLastRequestIdReceivedBySuccessor(ctx)
-		node.replaySentRequest(ctx, lastReceivedRequestIdBySuccessor)
+		if request.FirstPendingRequestId != "nil" || request.LastPendingRequestId != "nil" {
+			// replay requests to new successor to ensure that failure in middle of the chain does not result in some requests being lost
+			node.replaySentRequest(ctx, request.FirstPendingRequestId, request.LastPendingRequestId)
+		}
 	}
 
 	node.logger.Printf("Config after reconfiguration : ")
 	node.logConfig()
 	node.logger.Printf("Chain reconfiguration done for node %s", node.addr)
+	if node.pending.IsEmpty() {
+		reply.FirstPendingRequestId = ""
+		reply.LastPendingRequestId = ""
+	} else {
+		reply.FirstPendingRequestId = node.pending.Head().Id()
+		reply.LastPendingRequestId = node.pending.Tail().Id()
+	}
+
 	reply.Ok = true
 	return nil
 }
@@ -145,31 +153,6 @@ func (node *ChainReplicationNode) SyncAddNode(request *rpcInterfaces.AddNodeArgs
 	return nil
 }
 
-func (node *ChainReplicationNode) LastRequestId(request *rpcInterfaces.LastRequestReceivedRequest, reply *rpcInterfaces.LastRequestReceivedReply) error {
-	reply.Id = ""
-	e := node.pending.Tail()
-	var startAt *utils.ChainLink
-	for ; !e.IsNull(); e = e.Previous() {
-		if getRequest(e).requestType == Update {
-			startAt = e
-			break
-		}
-	}
-
-	if startAt != nil && !startAt.IsNull() {
-		reply.Id = getRequest(startAt).id
-	}
-
-	return nil
-}
-
-func getRequest(c *utils.ChainLink) *Request {
-	if c.IsNull() {
-		return nil
-	}
-	return c.Data().(*Request)
-}
-
 func (node *ChainReplicationNode) syncConfig(newConfig *rpcInterfaces.SyncConfigurationRequest) {
 	node.config.next = newConfig.Next
 	node.config.prev = newConfig.Previous
@@ -178,8 +161,8 @@ func (node *ChainReplicationNode) syncConfig(newConfig *rpcInterfaces.SyncConfig
 func (node *ChainReplicationNode) logConfig() {
 	node.logger.Printf("Node configuration for node %s, isHead: %s, isTail: %s, Prev: %s, Next: %s",
 		node.addr,
-		node.config.isHead,
-		node.config.isTail,
+		node.config.isHead(),
+		node.config.isTail(),
 		node.config.prev,
 		node.config.next)
 }

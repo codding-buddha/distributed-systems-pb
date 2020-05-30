@@ -7,6 +7,7 @@ import (
 	"github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/ext"
 	"github.com/opentracing/opentracing-go/log"
+	"math/rand"
 	"net"
 	"net/rpc"
 	"sync"
@@ -21,6 +22,7 @@ type Master struct {
 	logger     utils.Logger
 	listener   net.Listener
 	alive      bool
+	weakChain  bool
 }
 
 type Node struct {
@@ -44,13 +46,14 @@ var emptyNode = Node{
 	Addr:     "",
 }
 
-func StartMaster(addr string, logger utils.Logger) (*Master, error) {
+func StartMaster(addr string, logger utils.Logger, weakChain bool) (*Master, error) {
 	master := &Master{
 		chain:  utils.NewChain(),
 		lock:   sync.RWMutex{},
 		logger: logger,
 		alive:  true,
-		addr: addr,
+		addr:   addr,
+		weakChain: weakChain,
 	}
 
 	rpcs := rpc.NewServer()
@@ -161,8 +164,27 @@ func (master *Master) GetChainConfiguration(args *rpcInterfaces.ChainConfigurati
 	head := master.head()
 	tail := master.tail()
 	reply.Head = head.Addr
-	reply.Tail = tail.Addr
+	if master.weakChain {
+		reply.Tail = master.pickRandomNode()
+	} else {
+		reply.Tail = tail.Addr
+	}
+
 	return nil
+}
+
+func (master *Master) pickRandomNode() string {
+	rand.Seed(time.Now().UnixNano())
+	indx := rand.Intn(master.chain.Count())
+	curr := 0
+	addr := ""
+	master.chain.IterFunc(func(chain *utils.ChainLink) {
+		if indx == curr {
+			addr = chain.Id()
+		}
+		curr++
+	})
+	return addr
 }
 
 func (master *Master) Heartbeat(args *rpcInterfaces.HeartBeatArgs, reply *rpcInterfaces.NoopReply) error {
@@ -182,9 +204,9 @@ func (master *Master) Shutdown() {
 	master.listener.Close()
 }
 
-func (master *Master) notifyChainUpdate(ctx context.Context, node *Node) {
+func (master *Master) notifyChainUpdate(ctx context.Context, node *Node, fReqId string, lReqId string) (string, string) {
 	if *node == emptyNode {
-		return
+		return "nil", "nil"
 	}
 
 	chainLink, _ := master.chain.GetById(node.Addr)
@@ -192,9 +214,11 @@ func (master *Master) notifyChainUpdate(ctx context.Context, node *Node) {
 	prevNode := master.getNode(chainLink.Previous())
 
 	updateConfigArgs := rpcInterfaces.SyncConfigurationRequest{
-		Next:     nextNode.Addr,
-		Previous: prevNode.Addr,
-		RequestBase: utils.NewRequestBase(),
+		Next:                  nextNode.Addr,
+		Previous:              prevNode.Addr,
+		FirstPendingRequestId: fReqId,
+		LastPendingRequestId:  lReqId,
+		RequestBase:           utils.NewRequestBase(),
 	}
 
 	var reply rpcInterfaces.SyncConfigurationReply
@@ -203,6 +227,8 @@ func (master *Master) notifyChainUpdate(ctx context.Context, node *Node) {
 	if err != nil {
 		master.logger.Error().Err(err).Msgf("Failed to notify chain link updates to node %s", node.Addr)
 	}
+
+	return reply.FirstPendingRequestId, reply.LastPendingRequestId
 }
 
 func (master *Master) updateAliveNodes() {
@@ -263,6 +289,8 @@ func (master *Master) updateAliveNodes() {
 		}
 
 		// Update nodes
+		lReqId := "nil"
+		fReqId := "nil"
 		for _, chainLink := range linksToBeUpdated {
 			node := master.getNode(chainLink)
 			master.logger.Printf("Node to be updated %s", node.Addr)
@@ -270,7 +298,7 @@ func (master *Master) updateAliveNodes() {
 				master.getNode(chainLink.Previous()).Addr,
 				master.getNode(chainLink.Next()).Addr)
 			if node.alive {
-				master.notifyChainUpdate(ctx, node)
+				fReqId, lReqId = master.notifyChainUpdate(ctx, node, fReqId, lReqId)
 			}
 		}
 
@@ -295,8 +323,8 @@ func (master *Master) logChainLink(chainLink *utils.ChainLink) {
 
 func (master *Master) extendChain(node *Node, ctx context.Context) error {
 	args := rpcInterfaces.AddNodeArgs{
-		RequestBase : utils.NewRequestBase(),
-		Addr:      node.Addr,
+		RequestBase: utils.NewRequestBase(),
+		Addr:        node.Addr,
 	}
 
 	var reply rpcInterfaces.AddNodeReply

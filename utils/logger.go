@@ -12,26 +12,38 @@ type Logger struct {
 	logger *zerolog.Logger
 }
 
-func New(isDebug bool) *Logger {
+func New(isDebug bool, host string) *Logger {
 	loglevel := zerolog.InfoLevel
 	if isDebug {
 		loglevel = zerolog.DebugLevel
 	}
 
 	zerolog.SetGlobalLevel(loglevel)
-	logger := zerolog.New(os.Stderr).With().Timestamp().Logger()
+	logger := zerolog.New(os.Stderr).
+		With().
+		Str("host", host).
+		Logger().
+		With().
+		Timestamp().
+		Logger()
 
 	return &Logger{logger: &logger}
 }
 
-func NewConsole(isDebug bool) *Logger {
+func NewConsole(isDebug bool, host string) *Logger {
 	logLevel := zerolog.InfoLevel
 	if isDebug {
 		logLevel = zerolog.DebugLevel
 	}
 
 	zerolog.SetGlobalLevel(logLevel)
-	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}).With().Timestamp().Logger()
+	logger := zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}).
+		With().
+		Str("host", host).
+		Logger().
+		With().
+		Timestamp().
+		Logger()
 	return &Logger{logger: &logger}
 }
 
