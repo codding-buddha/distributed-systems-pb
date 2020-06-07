@@ -5,7 +5,6 @@ import (
 	"context"
 	"fmt"
 	"github.com/codding-buddha/ds-pb/replication/proxy"
-	rpcInterfaces "github.com/codding-buddha/ds-pb/replication/rpc"
 	"github.com/codding-buddha/ds-pb/utils"
 	guuid "github.com/google/uuid"
 	"math/rand"
@@ -96,18 +95,19 @@ func ensureDir(fileName string) {
 func executeRequests(proxy *proxy.ServiceClient, cleanup func(), requests []kv, wg *sync.WaitGroup)  {
 	defer wg.Done()
 	defer cleanup()
-	replyChannel := make(chan *rpcInterfaces.ResponseCallback)
+	replyChannel := make(chan *proxy.Result)
 	ctx := context.Background()
 	for _, r := range requests {
 		if r.value != "" {
-			proxy.UpdateAsync(ctx, r.key, r.value, replyChannel)
+			proxy.Update(ctx, r.key, r.value, replyChannel)
+			<- replyChannel
 			fmt.Printf("Waiting for update of key %s\n", r.key)
 		} else {
-			proxy.QueryAsync(ctx, r.key, replyChannel)
+			proxy.Query(ctx, r.key)
 			fmt.Printf("Waiting for query of key %s\n", r.key)
 		}
 
-		<- replyChannel
+
 		if r.value != "" {
 			fmt.Printf("Completed update of key %s\n", r.key)
 		} else {
@@ -128,7 +128,7 @@ func shuffle(pairs []kv) {
 
 func createClient(addr string, mAddr string) (*proxy.ServiceClient, func()) {
 	logger := utils.NewConsole(false, addr)
-	client, error := proxy.InitClient(addr, mAddr, *logger)
+	client, error := proxy.New(addr, mAddr, "master", *logger)
 
 	if error != nil {
 		return client, func() {

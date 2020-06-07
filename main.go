@@ -48,9 +48,8 @@ func main() {
 		tracer, closer := utils.InitJaeger("client", !*trace)
 		defer closer.Close()
 		opentracing.SetGlobalTracer(tracer)
-		client, _ := proxy.InitClient(*addr, *masterAddr, *logger)
+		client, _ := proxy.New(*addr, *masterAddr, "master", *logger)
 		scanner := bufio.NewScanner(os.Stdin)
-		reply := client.OnReply()
 		for scanner.Scan() {
 			input := scanner.Text()
 			if input == "q" {
@@ -62,14 +61,14 @@ func main() {
 			if parts[0] == "q" {
 				span := tracer.StartSpan("query")
 				ctx := opentracing.ContextWithSpan(context.Background(), span)
-				client.Query(ctx, parts[1])
-				response := <-reply
+				response := client.Query(ctx, parts[1])
 				span.Finish()
 				logger.Printf("Key : %s, Value : %s", response.Key, response.Value)
 			} else {
+				reply := make(chan *proxy.Result)
 				span := tracer.StartSpan("update")
 				ctx := opentracing.ContextWithSpan(context.Background(), span)
-				client.Update(ctx, parts[1], parts[2])
+				client.Update(ctx, parts[1], parts[2], reply)
 				response := <-reply
 				span.Finish()
 				logger.Printf("Key : %s, Value : %s", response.Key, response.Value)
