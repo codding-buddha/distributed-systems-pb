@@ -14,6 +14,6 @@ When update request (req) arrives -
 
 |  Invariants |  |
 :-------------------------:|:-------------------------:
-| Pending state of  node's successor is a subset of that node's pending state.     | <img src="/codding-buddha/distributed-systems-pb/raw/master/docs/img/invariant1.png" alt="invariant1" style="max-width:100%;width: 250px;">|
-| Entire Pending state of node is superset of its stable store|<img src="/codding-buddha/distributed-systems-pb/raw/master/docs/img/invariant2.png" alt="invariant1" style="max-width:100%;height: 250px;">|
-| Stable store of a node's successor is superset of that node's stable store.|<img src="/codding-buddha/distributed-systems-pb/raw/master/docs/img/invariant3.png" alt="invariant1" style="max-width:100%;width: 250px;">|
+| Pending state of  node's successor is a subset of that node's pending state.     | <img src="/docs/img/invariant1.png" alt="invariant1" width="250"/>|
+| Entire Pending state of node is superset of its stable store|<img src="/docs/img/invariant2.png" alt="invariant2" height="250"/>|
+| Stable store of a node's successor is superset of that node's stable store.|<img src="/docs/img/invariant3.png" alt="invariant3" width="250"/>|
