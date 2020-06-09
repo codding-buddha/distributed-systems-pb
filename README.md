@@ -42,14 +42,14 @@ In order to detect failures of server that is part of the chain (fail-stop assum
 * reconfigures the chain by informing each server in the chain of its new predecessor or new successor in the new chain obtained  by deleting the failed server.
 * informs clients about (or book keeping of) current head & tail.
 
-![SingleChain](./docs/img/single-chain.png)
+<img src="/docs/img/single-chain.png" width="600"/>
 
 ### Multi Chain
 
 For large scale store we would like to partition key sets among multiple chains. To manage partitions and map a given key to particular chain, Dispatcher service is used.
 Client sends all its request to Dispatcher, however update replies are sent by tail of the given chain directly.
 
-<img src="/docs/img/single-chain.png" width="600"/>
+![MultiChain](./docs/img/multi-chain.png)
 
 ### Comparison, Limitation & Misc
 Obvious short-coming of chain replication is latency when compared to typical primary-backup approach as request needs to go through entire chain, however unlike primary-backup tail can respond to query resulting in better throughput. Also, for strong consistency not all servers are utilized for query requests.
