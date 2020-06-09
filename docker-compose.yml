@@ -1,0 +1,31 @@
+version: '3.2'
+services:
+  master:
+    network_mode: host
+    build:
+      context: "./"
+    command: ["-enableTrace=false"]
+
+  head:
+    network_mode: host
+    build:
+      context: "./"
+    depends_on:
+      - "master"
+    command: ["-mode=chain", "-maddr=localhost:9000", "-addr=localhost:9001", "-enableTrace=false"]
+
+  node1:
+    network_mode: host
+    build:
+      context: "./"
+    depends_on:
+      - "head"
+    command: ["-mode=chain", "-maddr=localhost:9000", "-addr=localhost:9002", "-enableTrace=false"]
+
+  tail:
+    network_mode: host
+    build:
+      context: "./"
+    depends_on:
+      - "node1"
+    command: ["-mode=chain", "-maddr=localhost:9000", "-addr=localhost:9003", "-enableTrace=false"]

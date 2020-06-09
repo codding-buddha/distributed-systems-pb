@@ -92,18 +92,18 @@ func ensureDir(fileName string) {
 	}
 }
 
-func executeRequests(proxy *proxy.ServiceClient, cleanup func(), requests []kv, wg *sync.WaitGroup)  {
+func executeRequests(client *proxy.ServiceClient, cleanup func(), requests []kv, wg *sync.WaitGroup)  {
 	defer wg.Done()
 	defer cleanup()
 	replyChannel := make(chan *proxy.Result)
 	ctx := context.Background()
 	for _, r := range requests {
 		if r.value != "" {
-			proxy.Update(ctx, r.key, r.value, replyChannel)
+			client.Update(ctx, r.key, r.value, replyChannel)
 			<- replyChannel
 			fmt.Printf("Waiting for update of key %s\n", r.key)
 		} else {
-			proxy.Query(ctx, r.key)
+			client.Query(ctx, r.key)
 			fmt.Printf("Waiting for query of key %s\n", r.key)
 		}
 
